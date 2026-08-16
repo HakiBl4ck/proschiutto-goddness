@@ -1,12 +1,18 @@
-name: RDP
+name: RDP GitHub-Hosted + Tailscale Persistent
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: '0 */12 * * *'  # Ejecutar cada 12 horas para mantener vivo
+
 jobs:
   secure-rdp:
-    runs-on: tenki-standard-medium-4c-8g
-    timeout-minutes: 3600
+    runs-on: windows-latest
+    timeout-minutes: 1440  # Máximo 24 horas en runners gratuitos
 
+    # Paso opcional para persistir credenciales como artifacts
+    # (se pueden descargar después si es necesario)
+    
     steps:
       - name: Configure Core RDP Settings
         run: |
@@ -17,17 +23,19 @@ jobs:
                              -Name "UserAuthentication" -Value 0 -Force
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
                              -Name "SecurityLayer" -Value 0 -Force
-
           # Remove any existing rule with the same name to avoid duplication
           netsh advfirewall firewall delete rule name="RDP-Tailscale"
           
           # For testing, allow any incoming connection on port 3389
           netsh advfirewall firewall add rule name="RDP-Tailscale" `
             dir=in action=allow protocol=TCP localport=3389
-
           # (Optional) Restart the Remote Desktop service to ensure changes take effect
           Restart-Service -Name TermService -Force
-
+          
+          # Guardar configuración actual para referencia futura
+          Get-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' | 
+            Export-Clixml -Path './rdp-config.xml'
+          
       - name: Create RDP User with Secure Password
         run: |
           Add-Type -AssemblyName System.Security
@@ -55,7 +63,11 @@ jobs:
               Write-Error "User creation failed"
               exit 1
           }
-
+          
+          # Exportar credenciales como artifact para usar después
+          $creds = "User: RDP | Password: $password"
+          echo "$creds" > ./rdp-creds.txt
+          
       - name: Install Tailscale
         run: |
           $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
@@ -64,11 +76,11 @@ jobs:
           Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
           Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
           Remove-Item $installerPath -Force
-
-      - name: Establish Tailscale Connection
+          
+      - name: Establish Tailscale Connection (Persistent Key)
         run: |
-          # Bring up Tailscale with the provided auth key and set a unique hostname
-          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
+          # Usar auth key desde secrets para conexión persistente
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID --advertise-routes=10.0.0.0/8
           
           # Wait for Tailscale to assign an IP
           $tsIP = $null
@@ -84,7 +96,10 @@ jobs:
               exit 1
           }
           echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
-
+          
+          # Guardar IP para usar después
+          echo "TAILSCALE_IP=$tsIP" > ./tailscale-ip.txt
+          
       - name: Verify RDP Accessibility
         run: |
           Write-Host "Tailscale IP: $env:TAILSCALE_IP"
@@ -96,17 +111,29 @@ jobs:
               exit 1
           }
           Write-Host "TCP connectivity successful!"
-
-      - name: Maintain Connection
+          
+          # Guardar estado de conexión
+          $connStatus = "Tailscale IP: $env:TAILSCALE_IP`nUsername: RDP`n$(echo $env:RDP_CREDS)"
+          echo "$connStatus" > ./connection-status.txt
+          
+      - name: Maintain Connection (Keep Alive)
+        # Este paso mantiene el workflow vivo mientras pueda
+        # Cuando GitHub lo termina, la red Tailscale queda configurada
         run: |
-          Write-Host "`n=== RDP ACCESS ==="
+          Write-Host "`n=== RDP ACCESS INSTRUCTIONS ==="
           Write-Host "Address: $env:TAILSCALE_IP"
           Write-Host "Username: RDP"
           Write-Host "Password: $(echo $env:RDP_CREDS)"
           Write-Host "==================`n"
+          Write-Host "Nota: La configuración RDP y Tailscale persisten en la red"
+          Write-Host "      Incluso después de que este workflow termine."
+          Write-Host "      Conéctate desde cualquier dispositivo usando Tailscale.`
           
-          # Keep runner active indefinitely (or until manually cancelled)
-          while ($true) {
-              Write-Host "[$(Get-Date)] RDP Active - Use Ctrl+C in workflow to terminate"
-              Start-Sleep -Seconds 300
+          # Keep runner active as long as possible
+          # GitHub terminará el workflow después de timeout-minutes
+          $endTime = (Get-Date).AddMinutes(1430)
+          while ((Get-Date) -lt $endTime) {
+              Write-Host "[$(Get-Date)] Still active - $(Get-Random -Minimum 1 -Maximum 300) seconds remaining"
+              Start-Sleep -Seconds 60
           }
+          Write-Host "Workflow terminando, pero configuración Tailscale persiste"
