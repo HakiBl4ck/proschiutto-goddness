@@ -127,7 +127,7 @@ jobs:
           Write-Host "==================`n"
           Write-Host "Nota: La configuración RDP y Tailscale persisten en la red"
           Write-Host "      Incluso después de que este workflow termine."
-          Write-Host "      Conéctate desde cualquier dispositivo usando Tailscale.`
+          Write-Host "      Conéctate desde cualquier dispositivo usando Tailscale"
           
           # Keep runner active as long as possible
           # GitHub terminará el workflow después de timeout-minutes
